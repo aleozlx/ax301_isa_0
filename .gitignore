@@ -1,0 +1,18 @@
+# Quartus build outputs
+db/
+incremental_db/
+output_files/
+sim/
+
+# Backup files
+*.bak
+*.txt.bak
+*.qsf.bak
+
+# Quartus metadata
+*.jdi
+*.qdf
+*_description.txt
+
+# Other
+*.tcl
