@@ -15,28 +15,43 @@ def assemble_line(line):
     op = parts[0]
     
     if op == 'MOVI':
-        # MOVI rX, imm4
+        # MOVI rX, imm4 -> [00][dst:2][imm:4]
         reg = int(parts[1][1])  # Extract number from r0-r3
         imm = int(parts[2], 0)  # Support 0x hex or decimal
         if reg > 3 or imm > 15:
             raise ValueError(f"Invalid MOVI: reg={reg}, imm={imm}")
         return (0b00 << 6) | (reg << 4) | imm
-    
-    elif op == 'ADD':
-        # ADD rX, rY
-        dest = int(parts[1][1])
+
+    elif op == 'MOV':
+        # MOV rX, rY -> [01][dst:2][00][src:2]
+        dst = int(parts[1][1])
         src = int(parts[2][1])
-        if dest > 3 or src > 3:
-            raise ValueError(f"Invalid ADD: dest={dest}, src={src}")
-        return (0b01 << 6) | (dest << 4) | (src << 2)
-    
-    elif op == 'DISP':
-        # DISP rX
+        if dst > 3 or src > 3:
+            raise ValueError(f"Invalid MOV: dst={dst}, src={src}")
+        return (0b01 << 6) | (dst << 4) | (0b00 << 2) | src
+
+    elif op == 'ADD':
+        # ADD rX, rY -> [01][dst:2][01][src:2]
+        dst = int(parts[1][1])
+        src = int(parts[2][1])
+        if dst > 3 or src > 3:
+            raise ValueError(f"Invalid ADD: dst={dst}, src={src}")
+        return (0b01 << 6) | (dst << 4) | (0b01 << 2) | src
+
+    elif op == 'PUSH':
+        # PUSH rX -> [10][rx:2][01][00]
         reg = int(parts[1][1])
         if reg > 3:
-            raise ValueError(f"Invalid DISP: reg={reg}")
-        return (0b11 << 6) | (reg << 4)
-    
+            raise ValueError(f"Invalid PUSH: reg={reg}")
+        return (0b10 << 6) | (reg << 4) | (0b01 << 2) | 0b00
+
+    elif op == 'POP':
+        # POP rX -> [10][rx:2][00][00]
+        reg = int(parts[1][1])
+        if reg > 3:
+            raise ValueError(f"Invalid POP: reg={reg}")
+        return (0b10 << 6) | (reg << 4) | (0b00 << 2) | 0b00
+
     else:
         raise ValueError(f"Unknown instruction: {op}")
 

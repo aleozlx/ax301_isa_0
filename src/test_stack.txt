@@ -1,0 +1,23 @@
+# Test program: PUSH/POP SDRAM stack operations
+# This program tests the new ISA with stack operations
+
+# Test 1: Basic PUSH/POP
+MOVI r0, 5      # r0 = 5
+PUSH r0         # Push 5 to SDRAM stack (SP = 0x900000)
+MOVI r0, 0      # r0 = 0 (clear register)
+POP  r0         # Pop from stack, r0 should = 5 again
+MOV  r3, r0     # Display r0 in digital tube (should show "05")
+
+# Test 2: Multiple values
+MOVI r1, 9      # r1 = 9
+PUSH r1         # Push 9
+MOVI r2, 3      # r2 = 3
+PUSH r2         # Push 3
+
+# Pop in reverse order (LIFO)
+POP  r1         # r1 = 3 (last pushed)
+POP  r2         # r2 = 9 (first pushed)
+
+# Compute and display
+ADD  r1, r2     # r1 = 3 + 9 = 12
+MOV  r3, r1     # Display (should show "0C")
