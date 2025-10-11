@@ -15,7 +15,14 @@ module uart_to_display(
     output wire [1:0] sdram_ba,
     output wire [12:0] sdram_addr,
     output wire [1:0] sdram_dqm,
-    inout wire [15:0] sdram_dq
+    inout wire [15:0] sdram_dq,
+
+    // VGA outputs
+    output wire [4:0] vga_out_r,
+    output wire [5:0] vga_out_g,
+    output wire [4:0] vga_out_b,
+    output wire vga_out_hs,
+    output wire vga_out_vs
 );
 
 // PLL: 50MHz -> 100MHz for SDRAM
@@ -30,6 +37,14 @@ sys_pll pll_inst (
 
 // Drive SDRAM clock pin
 assign sdram_clk = clk_100mhz;
+
+// VGA PLL: 50MHz -> 65MHz for VGA pixel clock
+wire clk_65mhz;
+
+video_pll video_pll_inst (
+    .inclk0(clk),
+    .c0(clk_65mhz)        // 65MHz for VGA
+);
 
 // UART RX instance (now runs at 100MHz)
 wire [7:0] rx_data;
@@ -404,6 +419,56 @@ seg_scan scanner(
     .seg_data_3({1'b1, seg_nibble0}),   // r3 lowest nibble
     .seg_data_4({1'b1, mon_nibble1}),   // Monitor high
     .seg_data_5({1'b1, mon_nibble0})    // Monitor low (rightmost)
+);
+
+// SRAM line buffer for VGA (2KB @ 0x0000-0x07FF)
+// Dual-port: Processor writes, VGA reads
+(* ramstyle = "M10K" *) reg [15:0] vga_line_buffer [0:1023];  // 2KB
+reg [15:0] vga_sram_rd_data;
+wire [15:0] vga_sram_rd_addr;
+
+// VGA read port
+always @(posedge clk_65mhz) begin
+    vga_sram_rd_data <= vga_line_buffer[vga_sram_rd_addr[9:0]];
+end
+
+// Processor write port (example - processor can write here for debugging)
+// For now, initialize with test pattern
+integer j;
+initial begin
+    for (j = 0; j < 1024; j = j + 1) begin
+        // Test pattern: alternating colors
+        if (j < 128)
+            vga_line_buffer[j] = 16'hF800;  // Red
+        else if (j < 256)
+            vga_line_buffer[j] = 16'h07E0;  // Green
+        else if (j < 384)
+            vga_line_buffer[j] = 16'h001F;  // Blue
+        else if (j < 512)
+            vga_line_buffer[j] = 16'hFFE0;  // Yellow
+        else if (j < 640)
+            vga_line_buffer[j] = 16'h07FF;  // Cyan
+        else if (j < 768)
+            vga_line_buffer[j] = 16'hF81F;  // Magenta
+        else if (j < 896)
+            vga_line_buffer[j] = 16'hFFFF;  // White
+        else
+            vga_line_buffer[j] = 16'h0000;  // Black
+    end
+end
+
+// VGA controller
+vga_controller vga_ctrl(
+    .clk_vga(clk_65mhz),
+    .clk_sys(clk_100mhz),
+    .rst_n(rst_n),
+    .vga_out_r(vga_out_r),
+    .vga_out_g(vga_out_g),
+    .vga_out_b(vga_out_b),
+    .vga_out_hs(vga_out_hs),
+    .vga_out_vs(vga_out_vs),
+    .sram_rd_addr(vga_sram_rd_addr),
+    .sram_rd_data(vga_sram_rd_data)
 );
 
 endmodule

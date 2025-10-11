@@ -95,13 +95,56 @@ set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to seg_sel[2]
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to seg_sel[1]
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to seg_sel[0]
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to uart_rx
+
+# VGA pins
+set_location_assignment PIN_L4 -to vga_out_r[4]
+set_location_assignment PIN_L3 -to vga_out_r[3]
+set_location_assignment PIN_L7 -to vga_out_r[2]
+set_location_assignment PIN_K5 -to vga_out_r[1]
+set_location_assignment PIN_K6 -to vga_out_r[0]
+set_location_assignment PIN_J6 -to vga_out_g[5]
+set_location_assignment PIN_L8 -to vga_out_g[4]
+set_location_assignment PIN_K8 -to vga_out_g[3]
+set_location_assignment PIN_F7 -to vga_out_g[2]
+set_location_assignment PIN_G5 -to vga_out_g[1]
+set_location_assignment PIN_F5 -to vga_out_g[0]
+set_location_assignment PIN_F6 -to vga_out_b[4]
+set_location_assignment PIN_E5 -to vga_out_b[3]
+set_location_assignment PIN_D3 -to vga_out_b[2]
+set_location_assignment PIN_D4 -to vga_out_b[1]
+set_location_assignment PIN_C3 -to vga_out_b[0]
+set_location_assignment PIN_L6 -to vga_out_hs
+set_location_assignment PIN_N3 -to vga_out_vs
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to vga_out_r[4]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to vga_out_r[3]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to vga_out_r[2]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to vga_out_r[1]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to vga_out_r[0]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to vga_out_g[5]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to vga_out_g[4]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to vga_out_g[3]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to vga_out_g[2]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to vga_out_g[1]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to vga_out_g[0]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to vga_out_b[4]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to vga_out_b[3]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to vga_out_b[2]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to vga_out_b[1]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to vga_out_b[0]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to vga_out_hs
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to vga_out_vs
+
 set_global_assignment -name VERILOG_FILE src/uart_to_display.v
 set_global_assignment -name VERILOG_FILE src/uart_tx.v
 set_global_assignment -name VERILOG_FILE src/uart_rx.v
 set_global_assignment -name VERILOG_FILE src/seg_scan.v
 set_global_assignment -name VERILOG_FILE src/seg_decoder.v
 set_global_assignment -name VERILOG_FILE src/sdram_core.v
+set_global_assignment -name VERILOG_FILE src/vga_timing.v
+set_global_assignment -name VERILOG_FILE src/vga_controller.v
+set_global_assignment -name VERILOG_FILE src/video_define.v
 set_global_assignment -name QIP_FILE src/ip_core/sys_pll.qip
+set_global_assignment -name VERILOG_FILE src/ip_core/video_pll.v
 set_global_assignment -name SDC_FILE uart_to_display.sdc
 set_global_assignment -name SOURCE_FILE src/myasm.py
 set_global_assignment -name TEXT_FILE src/test_stack.txt
