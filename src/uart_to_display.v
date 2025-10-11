@@ -48,17 +48,24 @@ uart_rx #(
     .rx_pin(uart_rx)
 );
 
-// Register file
-reg [7:0] registers [0:3];  // r0-r3 (r3 is display register)
-reg [23:0] sp;              // Stack pointer (24-bit for SDRAM addressing)
+// Register file (16-bit ISA upgrade)
+reg [15:0] registers [0:15];  // r0-r15 (r3 is display register)
+reg [23:0] sp;                // Stack pointer (24-bit for SDRAM addressing)
 integer i;
 
-// Decode instruction: [opcode:2][dst:2][subop/imm:2][src/unused:2]
-wire [1:0] opcode = rx_data[7:6];
-wire [1:0] dst    = rx_data[5:4];
-wire [1:0] subop  = rx_data[3:2];  // subop for reg/mem ops
-wire [1:0] src    = rx_data[1:0];
-wire [3:0] imm    = rx_data[3:0];  // immediate for MOVI (special case)
+// 16-bit instruction assembly (2 bytes from UART)
+reg [7:0] inst_byte_high;     // First byte received (bits [15:8])
+reg inst_byte_valid;           // Flag: waiting for second byte
+wire [15:0] instruction = {inst_byte_high, rx_data};  // Assembled 16-bit instruction
+
+// Decode 16-bit instruction: [Op:2][Mod:6][Src:4][Dst:4]
+wire [1:0] opcode = instruction[15:14];
+wire [5:0] mod    = instruction[13:8];
+wire [3:0] src    = instruction[7:4];
+wire [3:0] dst    = instruction[3:0];
+
+// For MOVI/ADDI: 4-bit immediate from src field (ADDI encoding: 00 010000 ssss dddd)
+wire [3:0] imm4   = src;
 
 // SDRAM direct 16-bit burst interface
 reg wr_burst_req;
@@ -139,19 +146,19 @@ localparam EXEC_PUSH_WAIT = 3'd6;    // Wait for PUSH write
 reg [7:0] init_counter;
 
 // Independent periodic monitor (750μs = 75,000 cycles @ 100MHz)
-reg [16:0] monitor_counter;
-reg [7:0] monitor_data;
+//reg [16:0] monitor_counter;
+//reg [15:0] monitor_data;  // Changed to 16-bit
 reg monitor_rd_req;
-reg [1:0] monitor_state;
-localparam MON_IDLE = 2'd0;
-localparam MON_READ = 2'd1;
-localparam MON_WAIT = 2'd2;
+//reg [1:0] monitor_state;
+//localparam MON_IDLE = 2'd0;
+//localparam MON_READ = 2'd1;
+//localparam MON_WAIT = 2'd2;
 
 // Execute instruction (now at 100MHz)
 always @(posedge clk_100mhz or negedge rst_n) begin
     if (!rst_n) begin
-        for (i = 0; i < 4; i = i + 1)
-            registers[i] <= 8'h00;
+        for (i = 0; i < 16; i = i + 1)
+            registers[i] <= 16'h0000;
         sp <= 24'h900010;  // Stack starts after initialized area (0x900000-0x90000F)
         rx_data_ready <= 1'b0;  // Not ready until SDRAM init done
         exec_state <= EXEC_INIT;
@@ -161,6 +168,8 @@ always @(posedge clk_100mhz or negedge rst_n) begin
         rd_burst_len <= 10'd1;
         init_counter <= 8'd0;
         sdram_write_data_reg <= 16'h0000;
+        inst_byte_high <= 8'h00;
+        inst_byte_valid <= 1'b0;
     end else begin
         case (exec_state)
             EXEC_INIT: begin
@@ -169,7 +178,7 @@ always @(posedge clk_100mhz or negedge rst_n) begin
                 rx_data_ready <= 1'b0;
                 if (init_counter < 8'd32) begin  // 32 words = 64 bytes (0x900000-0x90003F)
                     wr_burst_addr <= 24'h900000 + {14'd0, init_counter, 1'b0};  // Word-aligned
-                    sdram_write_data_reg <= 16'hCCCC;  // Both bytes CC
+                    sdram_write_data_reg <= 16'hA301;
                     wr_burst_req <= 1'b1;
                     exec_state <= EXEC_INIT_WAIT;
                 end else begin
@@ -202,7 +211,7 @@ always @(posedge clk_100mhz or negedge rst_n) begin
             EXEC_INIT_READ_WAIT: begin
                 // Capture read data and display it
                 if (rd_burst_data_valid) begin
-                    registers[3] <= rd_burst_data[7:0];  // Display on r3 (should show CC)
+                    registers[3] <= rd_burst_data[15:0];  // Display on r3
                 end
 
                 // Wait for read to complete
@@ -215,50 +224,69 @@ always @(posedge clk_100mhz or negedge rst_n) begin
             EXEC_FETCH: begin
                 rx_data_ready <= 1'b1;
                 if (rx_data_valid) begin
-                    case (opcode)
-                        2'b00: begin  // MOVI rx, imm4
-                            registers[dst] <= {4'b0, imm};
-                        end
+                    if (!inst_byte_valid) begin
+                        // First byte received (high byte)
+                        inst_byte_high <= rx_data;
+                        inst_byte_valid <= 1'b1;
+                    end else begin
+                        // Second byte received (low byte), instruction complete
+                        inst_byte_valid <= 1'b0;
 
-                        2'b01: begin  // Register ops
-                            case (subop)
-                                2'b00: begin  // MOV rx, ry
-                                    registers[dst] <= registers[src];
-                                end
-                                2'b01: begin  // ADD rx, ry
-                                    registers[dst] <= registers[dst] + registers[src];
-                                end
-                                // 2'b10, 2'b11: reserved for SUB, XOR, etc.
-                            endcase
-                        end
+                        // Decode 16-bit instruction [Op:2][Mod:6][Src:4][Dst:4]
+                        case (opcode)
+                            2'b00: begin  // R-Family (Register/ALU operations)
+                                case (mod)
+                                    6'b000000: begin  // MOV rd, rs
+                                        registers[dst] <= registers[src];
+                                    end
+                                    6'b000001: begin  // ADD rd, rs
+                                        registers[dst] <= registers[dst] + registers[src];
+                                    end
+                                    6'b000101: begin  // XOR rd, rs
+                                        registers[dst] <= registers[dst] ^ registers[src];
+                                    end
+                                    6'b010000: begin  // ADDI rd, imm4
+                                        registers[dst] <= registers[dst] + {12'b0, imm4};
+                                    end
+                                    default: begin
+                                        // Unknown R-family instruction, ignore
+                                    end
+                                endcase
+                            end
 
-                        2'b10: begin  // Memory ops (16-bit SDRAM access)
-                            case (subop)
-                                2'b00: begin  // POP rx (SP -= 2, read from new SP)
-                                    sp <= sp - 24'd2;
-                                    rd_burst_addr_main <= sp - 24'd2;  // Read from new SP value
-                                    rd_burst_req_main <= 1'b1;
-                                    exec_state <= EXEC_POP_WAIT;
-                                end
-                                2'b01: begin  // PUSH rx (write to SP, SP += 2)
-                                    wr_burst_addr <= sp;
-                                    sdram_write_data_reg <= {registers[dst], registers[dst]};
-                                    wr_burst_req <= 1'b1;
-                                    sp <= sp + 24'd2;
-                                    exec_state <= EXEC_PUSH_WAIT;
-                                end
-                            endcase
-                        end
+                            2'b01: begin  // M-Family (Memory operations)
+                                case (mod)
+                                    6'b000010: begin  // PUSH rd
+                                        wr_burst_addr <= sp;
+                                        sdram_write_data_reg <= registers[dst];
+                                        wr_burst_req <= 1'b1;
+                                        sp <= sp + 24'd2;
+                                        exec_state <= EXEC_PUSH_WAIT;
+                                    end
+                                    6'b000011: begin  // POP rd
+                                        sp <= sp - 24'd2;
+                                        rd_burst_addr_main <= sp - 24'd2;
+                                        rd_burst_req_main <= 1'b1;
+                                        exec_state <= EXEC_POP_WAIT;
+                                    end
+                                    default: begin
+                                        // Unknown M-family instruction, ignore
+                                    end
+                                endcase
+                            end
 
-                        // 2'b11: reserved for future complex instructions
-                    endcase
+                            default: begin
+                                // Op 10 (J-family) and 11 (X-family) not implemented yet
+                            end
+                        endcase
+                    end
                 end
             end
 
             EXEC_POP_WAIT: begin
-                // Exactly like EXEC_INIT_READ_WAIT
+                // Wait for POP read to complete
                 if (rd_burst_data_valid) begin
-					     registers[dst] <= rd_burst_data[7:0];
+                    registers[dst] <= rd_burst_data[15:0];  // Full 16-bit value
                 end
 
                 // Only check finish if req is still active
@@ -285,84 +313,97 @@ always @(posedge clk_100mhz or negedge rst_n) begin
 end
 
 // Independent periodic SDRAM monitor (runs at 750μs intervals)
-always @(posedge clk_100mhz or negedge rst_n) begin
-    if (!rst_n) begin
-        monitor_counter <= 17'd0;
-        monitor_data <= 8'h00;
-        monitor_rd_req <= 1'b0;
-        monitor_state <= MON_IDLE;
-    end else begin
-        // Counter increments every cycle
-        if (monitor_counter < 17'd75000)
-            monitor_counter <= monitor_counter + 1;
-        else
-            monitor_counter <= 17'd0;
+//always @(posedge clk_100mhz or negedge rst_n) begin
+//    if (!rst_n) begin
+//        monitor_counter <= 17'd0;
+//        monitor_data <= 16'h0000;
+//        monitor_rd_req <= 1'b0;
+//        monitor_state <= MON_IDLE;
+//    end else begin
+//        // Counter increments every cycle
+//        if (monitor_counter < 17'd75000)
+//            monitor_counter <= monitor_counter + 1;
+//        else
+//            monitor_counter <= 17'd0;
+//
+//        case (monitor_state)
+//            MON_IDLE: begin
+//                if (monitor_counter == 17'd75000) begin
+//                    monitor_state <= MON_READ;
+//                end
+//            end
+//
+//            MON_READ: begin
+//                // Issue read request (address muxed automatically to 0x900000)
+//                monitor_rd_req <= 1'b1;
+//                monitor_state <= MON_WAIT;
+//            end
+//
+//            MON_WAIT: begin
+//                // Capture data when valid (shared signal with main)
+//                if (rd_burst_data_valid && monitor_rd_req) begin
+//                    monitor_data <= rd_burst_data[15:0];  // Full 16-bit
+//                end
+//
+//                // Wait for finish
+//                if (rd_burst_finish && monitor_rd_req) begin
+//                    monitor_rd_req <= 1'b0;
+//                    monitor_state <= MON_IDLE;
+//                end
+//            end
+//        endcase
+//    end
+//end
 
-        case (monitor_state)
-            MON_IDLE: begin
-                if (monitor_counter == 17'd75000) begin
-                    monitor_state <= MON_READ;
-                end
-            end
+// Decode nibbles to 7-seg (r3 is the display register, now 16-bit)
+wire [6:0] seg_nibble0, seg_nibble1, seg_nibble2, seg_nibble3;
+wire [6:0] mon_nibble0, mon_nibble1;
 
-            MON_READ: begin
-                // Issue read request (address muxed automatically to 0x900000)
-                monitor_rd_req <= 1'b1;
-                monitor_state <= MON_WAIT;
-            end
-
-            MON_WAIT: begin
-                // Capture data when valid (shared signal with main)
-                if (rd_burst_data_valid && monitor_rd_req) begin
-                    monitor_data <= rd_burst_data[7:0];
-                end
-
-                // Wait for finish
-                if (rd_burst_finish && monitor_rd_req) begin
-                    monitor_rd_req <= 1'b0;
-                    monitor_state <= MON_IDLE;
-                end
-            end
-        endcase
-    end
-end
-
-// Decode nibbles to 7-seg (r3 is the display register)
-wire [6:0] seg_low, seg_high;
-wire [6:0] mon_low, mon_high;
-
-seg_decoder dec_low(
-    .bin_data(registers[3][3:0]),
-    .seg_data(seg_low)
+// r3 register (16-bit = 4 nibbles)
+seg_decoder dec_r3_0(
+    .bin_data(registers[3][3:0]),    // Lowest nibble
+    .seg_data(seg_nibble0)
 );
 
-seg_decoder dec_high(
+seg_decoder dec_r3_1(
     .bin_data(registers[3][7:4]),
-    .seg_data(seg_high)
+    .seg_data(seg_nibble1)
 );
 
-seg_decoder mon_dec_low(
-    .bin_data(monitor_data[3:0]),
-    .seg_data(mon_low)
+seg_decoder dec_r3_2(
+    .bin_data(registers[3][11:8]),
+    .seg_data(seg_nibble2)
 );
 
-seg_decoder mon_dec_high(
-    .bin_data(monitor_data[7:4]),
-    .seg_data(mon_high)
+seg_decoder dec_r3_3(
+    .bin_data(registers[3][15:12]),  // Highest nibble
+    .seg_data(seg_nibble3)
 );
+
+// Monitor data (16-bit = 4 nibbles, but only show 2 for now)
+//seg_decoder mon_dec_0(
+//    .bin_data(monitor_data[3:0]),
+//    .seg_data(mon_nibble0)
+//);
+//
+//seg_decoder mon_dec_1(
+//    .bin_data(monitor_data[7:4]),
+//    .seg_data(mon_nibble1)
+//);
 
 // Display scanner - use original 50MHz clock for stable display
+// Layout: [r3[15:12]][r3[11:8]][r3[7:4]][r3[3:0]][mon[7:4]][mon[3:0]]
 seg_scan scanner(
     .clk(clk),
     .rst_n(rst_n),
     .seg_sel(seg_sel),
     .seg_data(seg_data),
-    .seg_data_0({1'b1, seg_high}),   // r3 high nibble (rightmost)
-    .seg_data_1({1'b1, seg_low}),    // r3 low nibble
-    .seg_data_2({1'b1, mon_high}),   // monitor high nibble
-    .seg_data_3({1'b1, mon_low}),    // monitor low nibble
-    .seg_data_4(8'hFF),
-    .seg_data_5(8'hFF)
+    .seg_data_0({1'b1, seg_nibble3}),   // r3 highest nibble (leftmost)
+    .seg_data_1({1'b1, seg_nibble2}),   // r3
+    .seg_data_2({1'b1, seg_nibble1}),   // r3
+    .seg_data_3({1'b1, seg_nibble0}),   // r3 lowest nibble
+    .seg_data_4({1'b1, mon_nibble1}),   // Monitor high
+    .seg_data_5({1'b1, mon_nibble0})    // Monitor low (rightmost)
 );
 
 endmodule

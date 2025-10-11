@@ -1,23 +1,32 @@
-# Test program: PUSH/POP SDRAM stack operations
-# This program tests the new ISA with stack operations
+# Test program: 16-bit ISA
 
-# Test 1: Basic PUSH/POP
-MOVI r0, 5      # r0 = 5
-PUSH r0         # Push 5 to SDRAM stack (SP = 0x900000)
-MOVI r0, 0      # r0 = 0 (clear register)
+# Test 1: Basic PUSH/POP with 16-bit values
+XOR  r0, r0     # r0 = 0 (clear via XOR with itself)
+ADDI r0, 5      # r0 = 0 + 5 = 5
+PUSH r0         # Push 5 to SDRAM stack (SP = 0x900010)
+XOR  r0, r0     # r0 = 0 (clear register)
 POP  r0         # Pop from stack, r0 should = 5 again
-MOV  r3, r0     # Display r0 in digital tube (should show "05")
+MOV  r3, r0     # Display r0 in digital tube (should show "0005")
 
-# Test 2: Multiple values
-MOVI r1, 9      # r1 = 9
+# Test 2: Multiple values (LIFO test)
+XOR  r1, r1     # r1 = 0
+ADDI r1, 9      # r1 = 9
 PUSH r1         # Push 9
-MOVI r2, 3      # r2 = 3
+XOR  r2, r2     # r2 = 0
+ADDI r2, 3      # r2 = 3
 PUSH r2         # Push 3
 
-# Pop in reverse order (LIFO)
+# Pop in reverse order
 POP  r1         # r1 = 3 (last pushed)
 POP  r2         # r2 = 9 (first pushed)
 
 # Compute and display
 ADD  r1, r2     # r1 = 3 + 9 = 12
-MOV  r3, r1     # Display (should show "0C")
+MOV  r3, r1     # Display (should show "000C")
+
+# Test 3: Test wider register access (r0-r15 instead of r0-r3)
+XOR  r4, r4     # r4 = 0
+ADDI r4, 15     # r4 = 15 (0x000F) - test higher register
+MOV  r5, r4     # r5 = r4 = 15
+ADD  r5, r4     # r5 = 15 + 15 = 30 (0x001E)
+MOV  r3, r5     # Display (should show "001E")
