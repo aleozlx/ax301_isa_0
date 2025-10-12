@@ -153,8 +153,6 @@ assign rd_burst_len = monitor_rd_req ? 10'd1 :
 always @(posedge clk_100mhz or negedge rst_n) begin
     if (!rst_n) begin
         vga_sdram_line_grant <= 1'b0;
-        vga_sdram_line_data <= 16'h0000;
-        vga_sdram_line_valid <= 1'b0;
         vga_sdram_line_done <= 1'b0;
         vga_rd_burst_active <= 1'b0;
         vga_rd_burst_addr_reg <= 24'h0;
@@ -167,21 +165,12 @@ always @(posedge clk_100mhz or negedge rst_n) begin
             vga_sdram_line_grant <= 1'b1;
             vga_rd_burst_active <= 1'b1;
             vga_rd_burst_addr_reg <= vga_sdram_line_addr;
-            // vga_rd_burst_len_reg <= 10'd1024;  // Full scanline (1024 pixels × 16-bit)
-            vga_rd_burst_len_reg <= 10'd512;  // Full scanline (1024 pixels × 16-bit)
+            vga_rd_burst_len_reg <= 10'd512;  // page size is 512 words maximum
             vga_sdram_line_done <= 1'b0;
         end else if (vga_rd_burst_active) begin
             // VGA burst active: forward SDRAM data to VGA
             // Keep grant asserted until request deasserts
             vga_sdram_line_grant <= vga_sdram_line_req;
-
-            // Forward data from SDRAM controller
-            if (rd_burst_data_valid) begin
-                vga_sdram_line_data <= rd_burst_data[15:0];
-                vga_sdram_line_valid <= 1'b1;
-            end else begin
-                vga_sdram_line_valid <= 1'b0;
-            end
 
             // Check if burst complete OR if VGA gave up (line_req deasserted)
             if (rd_burst_finish || !vga_sdram_line_req) begin
@@ -191,7 +180,6 @@ always @(posedge clk_100mhz or negedge rst_n) begin
         end else begin
             vga_sdram_line_grant <= 1'b0;
             vga_sdram_line_done <= 1'b0;
-            vga_sdram_line_valid <= 1'b0;
         end
     end
 end
@@ -317,8 +305,9 @@ always @(posedge clk_100mhz or negedge rst_n) begin
                 rx_data_ready <= 1'b0;
 
                 if (fb_init_counter < 20'd786432) begin  // 1024×768 pixels
-                    // Calculate address: FB0_BASE + (pixel_index * 2)
-                    wr_burst_addr <= FB0_BASE + {fb_init_counter[18:0], 1'b0};
+                    // Calculate address: FB0_BASE + pixel_index
+                    // (memory uses word address: 1 pixel = 1 word = 1 pointer incr)
+                    wr_burst_addr <= FB0_BASE + fb_init_counter[18:0];
 
                     // Generate pattern: 8 colors, 128 pixels each (total 1024 pixels wide)
                     // Color based on X position (fb_init_counter % 1024)
@@ -332,8 +321,14 @@ always @(posedge clk_100mhz or negedge rst_n) begin
                     //     3'd6: sdram_write_data_reg <= 16'hFFFF;  // White
                     //     3'd7: sdram_write_data_reg <= 16'h0000;  // Black
                     // endcase
-                    // sdram_write_data_reg <= fb_init_counter[14] ^ fb_init_counter[4] ? 16'h07FF : 16'hF81F;
-                    sdram_write_data_reg <= 16'hFFFF;
+
+                    // if (fb_init_counter < 20'd196608)
+                    //     sdram_write_data_reg <= 16'hF81F;
+                    // else
+                    //     sdram_write_data_reg <= 16'h07E0;
+
+                    sdram_write_data_reg <= fb_init_counter[15] ^ fb_init_counter[5] ? 16'h07FF : 16'hF81F;
+                    // sdram_write_data_reg <= 16'hFFFF;
 
                     wr_burst_req <= 1'b1;
                     exec_state <= EXEC_INIT_FB_WAIT;
@@ -515,16 +510,16 @@ end
 //end
 
 // DEBUG: Check why arbiter never grants VGA
-wire [15:0] debug_display;
-assign debug_display[15:10] = 6'h0;
-assign debug_display[9] = vga_enable;
-assign debug_display[8] = vga_sdram_line_req;
-assign debug_display[7] = vga_rd_burst_active;
-assign debug_display[6] = wr_burst_req;
-assign debug_display[5] = rd_burst_req_main;
-assign debug_display[4] = monitor_rd_req;
-assign debug_display[3:2] = vga_fill_state[1:0];
-assign debug_display[1:0] = 2'b0;
+// wire [15:0] debug_display;
+// assign debug_display[15:10] = 6'h0;
+// assign debug_display[9] = vga_enable;
+// assign debug_display[8] = vga_sdram_line_req;
+// assign debug_display[7] = vga_rd_burst_active;
+// assign debug_display[6] = wr_burst_req;
+// assign debug_display[5] = rd_burst_req_main;
+// assign debug_display[4] = monitor_rd_req;
+// assign debug_display[3:2] = vga_fill_state[1:0];
+// assign debug_display[1:0] = 2'b0;
 
 // Decode nibbles to 7-seg (show debug info instead of r3)
 wire [6:0] seg_nibble0, seg_nibble1, seg_nibble2, seg_nibble3;
@@ -532,22 +527,22 @@ wire [6:0] mon_nibble0, mon_nibble1;
 
 // Debug display (16-bit = 4 nibbles)
 seg_decoder dec_r3_0(
-    .bin_data(debug_display[3:0]),    // Lowest nibble
+    .bin_data(registers[3][3:0]),    // Lowest nibble
     .seg_data(seg_nibble0)
 );
 
 seg_decoder dec_r3_1(
-    .bin_data(debug_display[7:4]),
+    .bin_data(registers[3][7:4]),
     .seg_data(seg_nibble1)
 );
 
 seg_decoder dec_r3_2(
-    .bin_data(debug_display[11:8]),
+    .bin_data(registers[3][11:8]),
     .seg_data(seg_nibble2)
 );
 
 seg_decoder dec_r3_3(
-    .bin_data(debug_display[15:12]),  // Highest nibble
+    .bin_data(registers[3][15:12]),  // Highest nibble
     .seg_data(seg_nibble3)
 );
 
@@ -577,45 +572,11 @@ seg_scan scanner(
     .seg_data_5({1'b1, mon_nibble0})    // Monitor low (rightmost)
 );
 
-// Dual SRAM line buffers for VGA (2KB × 2)
-// Buffer A: 0x0000-0x03FF (1024 pixels × 16-bit)
-// Buffer B: 0x0400-0x07FF (1024 pixels × 16-bit)
-(* ramstyle = "M10K" *) reg [15:0] vga_line_buffer_a [0:1023];
-(* ramstyle = "M10K" *) reg [15:0] vga_line_buffer_b [0:1023];
-
-// VGA controller SRAM interface
-wire [10:0] vga_sram_wr_addr;
-wire [15:0] vga_sram_wr_data;
-wire vga_sram_wr_en;
-wire vga_sram_buf_sel;
-wire [10:0] vga_sram_rd_addr;
-wire vga_sram_rd_buf_sel;
-reg [15:0] vga_sram_rd_data;
-
-// SRAM write port (VGA controller writes during H-blank)
-always @(posedge clk_100mhz) begin
-    if (vga_sram_wr_en) begin
-        if (vga_sram_buf_sel)
-            vga_line_buffer_b[vga_sram_wr_addr] <= vga_sram_wr_data;
-        else
-            vga_line_buffer_a[vga_sram_wr_addr] <= vga_sram_wr_data;
-    end
-end
-
-// SRAM read port (VGA reads for display)
-always @(posedge clk_65mhz) begin
-    if (vga_sram_rd_buf_sel)
-        vga_sram_rd_data <= vga_line_buffer_b[vga_sram_rd_addr];
-    else
-        vga_sram_rd_data <= vga_line_buffer_a[vga_sram_rd_addr];
-end
-
-// VGA line fill SDRAM interface
 wire vga_sdram_line_req;
 reg vga_sdram_line_grant;
 wire [23:0] vga_sdram_line_addr;
-reg [15:0] vga_sdram_line_data;
-reg vga_sdram_line_valid;
+// reg [15:0] vga_sdram_line_data;
+// reg vga_sdram_line_valid;
 reg vga_sdram_line_done;
 
 // Vsync pulse for buffer swapping
@@ -635,18 +596,12 @@ vga_controller vga_ctrl(
     .vga_out_b(vga_out_b),
     .vga_out_hs(vga_out_hs),
     .vga_out_vs(vga_out_vs),
-    .sram_wr_addr(vga_sram_wr_addr),
-    .sram_wr_data(vga_sram_wr_data),
-    .sram_wr_en(vga_sram_wr_en),
-    .sram_buf_sel(vga_sram_buf_sel),
-    .sram_rd_addr(vga_sram_rd_addr),
-    .sram_rd_buf_sel(vga_sram_rd_buf_sel),
-    .sram_rd_data(vga_sram_rd_data),
+
     .sdram_line_req(vga_sdram_line_req),
     .sdram_line_grant(vga_sdram_line_grant),
     .sdram_line_addr(vga_sdram_line_addr),
-    .sdram_line_data(vga_sdram_line_data),
-    .sdram_line_valid(vga_sdram_line_valid),
+    .sdram_line_data(rd_burst_data[15:0]),
+    .sdram_line_valid(rd_burst_data_valid),
     .sdram_line_done(vga_sdram_line_done),
     .fb_base_addr(front_fb_base),
     .vsync_pulse(vsync_pulse),
