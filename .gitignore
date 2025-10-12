@@ -18,5 +18,4 @@ sim/
 *.tcl
 
 .claude/
-CLAUDE.md
 *context.txt
