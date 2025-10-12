@@ -46,6 +46,21 @@ video_pll video_pll_inst (
     .c0(clk_65mhz)        // 65MHz for VGA
 );
 
+// Framebuffer layout in SDRAM (RGB565 format, 16-bit per pixel)
+// Each scanline: 1024 pixels × 2 bytes = 2048 bytes
+// Each framebuffer: 1024 × 768 × 2 = 1,572,864 bytes (1.5 MiB)
+localparam FB0_BASE = 24'h000000;  // Framebuffer 0: 0x000000 - 0x17FFFF
+localparam FB1_BASE = 24'h180000;  // Framebuffer 1: 0x180000 - 0x2FFFFF
+localparam FB_SCANLINE_BYTES = 11'd2048;  // 1024 pixels × 2 bytes
+
+// Double-buffer management
+reg front_buffer;       // 0 = FB0, 1 = FB1 (VGA reads from this)
+reg back_buffer;        // 0 = FB0, 1 = FB1 (processor writes to this)
+reg frame_ready;        // Processor sets when rendering complete
+reg vga_enable;         // Enable VGA after processor init complete
+wire [23:0] front_fb_base = front_buffer ? FB1_BASE : FB0_BASE;
+wire [23:0] back_fb_base = back_buffer ? FB1_BASE : FB0_BASE;
+
 // UART RX instance (now runs at 100MHz)
 wire [7:0] rx_data;
 wire rx_data_valid;
@@ -92,7 +107,8 @@ wire wr_burst_finish;
 
 reg rd_burst_req_main;      // Main execution path read request
 wire rd_burst_req;           // Combined with monitor
-reg [9:0] rd_burst_len;
+reg [9:0] rd_burst_len_main; // Main execution path burst length
+wire [9:0] rd_burst_len;     // Multiplexed burst length
 reg [23:0] rd_burst_addr_main;  // Main execution path address
 wire [23:0] rd_burst_addr;       // Multiplexed address
 wire [15:0] rd_burst_data;
@@ -102,10 +118,83 @@ wire rd_burst_finish;
 // Working register for SDRAM operations
 reg [15:0] sdram_write_data_reg;
 
-// Combine main and monitor read requests
-assign rd_burst_req = rd_burst_req_main | monitor_rd_req;
-// Multiplex address: monitor wins when it's requesting (simpler priority)
-assign rd_burst_addr = monitor_rd_req ? 24'h900000 : rd_burst_addr_main;
+// SDRAM arbiter: VGA and processor share SDRAM controller
+// Priority: Monitor (debug) > Processor > VGA
+// VGA only gets access when enabled and processor idle
+reg vga_rd_burst_active;
+reg [23:0] vga_rd_burst_addr_reg;
+reg [9:0] vga_rd_burst_len_reg;
+
+assign rd_burst_req = monitor_rd_req ? 1'b1 :
+                      rd_burst_req_main ? 1'b1 :
+                      vga_rd_burst_active ? 1'b1 :  // VGA burst in progress
+                      1'b0;
+
+assign rd_burst_addr = monitor_rd_req ? 24'h900000 :
+                       rd_burst_req_main ? rd_burst_addr_main :
+                       vga_rd_burst_addr_reg;
+
+/* notes: H57V2562 
+4 banks × 8192 rows × 512 columns × 16 bits
+= 4 × 2^13 × 2^9 × 16
+= 4 × 8K × 512 × 16 bits
+= 256 Mbit ✓
+
+burst modes: 1, 2, 4, 8 words or full page (512 words)
+
+we use full page + early stop, which requires that
+rd_burst_len <= 512
+*/
+assign rd_burst_len = monitor_rd_req ? 10'd1 :
+                      rd_burst_req_main ? rd_burst_len_main :
+                      vga_rd_burst_len_reg;
+
+// VGA line fill arbiter
+always @(posedge clk_100mhz or negedge rst_n) begin
+    if (!rst_n) begin
+        vga_sdram_line_grant <= 1'b0;
+        vga_sdram_line_data <= 16'h0000;
+        vga_sdram_line_valid <= 1'b0;
+        vga_sdram_line_done <= 1'b0;
+        vga_rd_burst_active <= 1'b0;
+        vga_rd_burst_addr_reg <= 24'h0;
+        vga_rd_burst_len_reg <= 10'd0;
+    end else begin
+        // VGA line request (when enabled and processor not using SDRAM)
+        if (vga_enable && vga_sdram_line_req && !vga_rd_burst_active &&
+            !wr_burst_req && !rd_burst_req_main && !monitor_rd_req) begin
+            // Grant VGA access and start burst read
+            vga_sdram_line_grant <= 1'b1;
+            vga_rd_burst_active <= 1'b1;
+            vga_rd_burst_addr_reg <= vga_sdram_line_addr;
+            // vga_rd_burst_len_reg <= 10'd1024;  // Full scanline (1024 pixels × 16-bit)
+            vga_rd_burst_len_reg <= 10'd512;  // Full scanline (1024 pixels × 16-bit)
+            vga_sdram_line_done <= 1'b0;
+        end else if (vga_rd_burst_active) begin
+            // VGA burst active: forward SDRAM data to VGA
+            // Keep grant asserted until request deasserts
+            vga_sdram_line_grant <= vga_sdram_line_req;
+
+            // Forward data from SDRAM controller
+            if (rd_burst_data_valid) begin
+                vga_sdram_line_data <= rd_burst_data[15:0];
+                vga_sdram_line_valid <= 1'b1;
+            end else begin
+                vga_sdram_line_valid <= 1'b0;
+            end
+
+            // Check if burst complete OR if VGA gave up (line_req deasserted)
+            if (rd_burst_finish || !vga_sdram_line_req) begin
+                vga_sdram_line_done <= 1'b1;
+                vga_rd_burst_active <= 1'b0;
+            end
+        end else begin
+            vga_sdram_line_grant <= 1'b0;
+            vga_sdram_line_done <= 1'b0;
+            vga_sdram_line_valid <= 1'b0;
+        end
+    end
+end
 
 // SDRAM controller core (uses 100MHz clock)
 sdram_core #(
@@ -148,17 +237,20 @@ sdram_core #(
 );
 
 // Execution state machine
-reg [2:0] exec_state;
-localparam EXEC_INIT = 3'd0;         // Initialize SDRAM with test pattern
-localparam EXEC_INIT_WAIT = 3'd1;    // Wait for init write to complete
-localparam EXEC_INIT_READ = 3'd2;    // Read back to verify SDRAM works
-localparam EXEC_INIT_READ_WAIT = 3'd3; // Wait for init read to complete
-localparam EXEC_FETCH = 3'd4;        // Fetch instruction
-localparam EXEC_POP_WAIT = 3'd5;     // Wait for POP read
-localparam EXEC_PUSH_WAIT = 3'd6;    // Wait for PUSH write
+reg [3:0] exec_state;
+localparam EXEC_INIT = 4'd0;         // Initialize SDRAM with test pattern at 0x900000
+localparam EXEC_INIT_WAIT = 4'd1;    // Wait for init write to complete
+localparam EXEC_INIT_FB = 4'd2;      // Initialize framebuffer with pattern
+localparam EXEC_INIT_FB_WAIT = 4'd3; // Wait for FB write to complete
+localparam EXEC_INIT_READ = 4'd4;    // Read back to verify SDRAM works
+localparam EXEC_INIT_READ_WAIT = 4'd5; // Wait for init read to complete
+localparam EXEC_FETCH = 4'd6;        // Fetch instruction
+localparam EXEC_POP_WAIT = 4'd7;     // Wait for POP read
+localparam EXEC_PUSH_WAIT = 4'd8;    // Wait for PUSH write
 
 // SDRAM initialization state
 reg [7:0] init_counter;
+reg [19:0] fb_init_counter;  // Counter for framebuffer init (up to 786432 pixels)
 
 // Independent periodic monitor (750μs = 75,000 cycles @ 100MHz)
 //reg [16:0] monitor_counter;
@@ -180,16 +272,17 @@ always @(posedge clk_100mhz or negedge rst_n) begin
         wr_burst_req <= 1'b0;
         rd_burst_req_main <= 1'b0;
         wr_burst_len <= 10'd1;  // Always 1 word (16-bit)
-        rd_burst_len <= 10'd1;
+        rd_burst_len_main <= 10'd1;
         init_counter <= 8'd0;
+        fb_init_counter <= 20'd0;
         sdram_write_data_reg <= 16'h0000;
         inst_byte_high <= 8'h00;
         inst_byte_valid <= 1'b0;
+        vga_enable <= 1'b0;  // VGA disabled during init
     end else begin
         case (exec_state)
             EXEC_INIT: begin
-                // Initialize SDRAM with 0xCC pattern (16-bit words)
-                // Fill more memory to catch out-of-bounds reads
+                // Initialize SDRAM with 0xA301 pattern (16-bit words) at 0x900000
                 rx_data_ready <= 1'b0;
                 if (init_counter < 8'd32) begin  // 32 words = 64 bytes (0x900000-0x90003F)
                     wr_burst_addr <= 24'h900000 + {14'd0, init_counter, 1'b0};  // Word-aligned
@@ -197,8 +290,9 @@ always @(posedge clk_100mhz or negedge rst_n) begin
                     wr_burst_req <= 1'b1;
                     exec_state <= EXEC_INIT_WAIT;
                 end else begin
-                    // Write done, now read back from 0x900000 to verify
-                    exec_state <= EXEC_INIT_READ;
+                    // Stack area done, now initialize framebuffer
+                    fb_init_counter <= 20'd0;
+                    exec_state <= EXEC_INIT_FB;
                 end
             end
 
@@ -213,6 +307,53 @@ always @(posedge clk_100mhz or negedge rst_n) begin
                     wr_burst_req <= 1'b0;
                     init_counter <= init_counter + 1;
                     exec_state <= EXEC_INIT;
+                end
+            end
+
+            EXEC_INIT_FB: begin
+                // Initialize framebuffer with vertical stripe pattern
+                // FB0: 1024×768 pixels = 786,432 pixels at 0x000000
+                // Pattern: 8-pixel wide stripes cycling through 8 colors
+                rx_data_ready <= 1'b0;
+
+                if (fb_init_counter < 20'd786432) begin  // 1024×768 pixels
+                    // Calculate address: FB0_BASE + (pixel_index * 2)
+                    wr_burst_addr <= FB0_BASE + {fb_init_counter[18:0], 1'b0};
+
+                    // Generate pattern: 8 colors, 128 pixels each (total 1024 pixels wide)
+                    // Color based on X position (fb_init_counter % 1024)
+                    // case (fb_init_counter[18:16])  // Bits [9:7] give position/128
+                    //     3'd0: sdram_write_data_reg <= 16'hF800;  // Red
+                    //     3'd1: sdram_write_data_reg <= 16'h07E0;  // Green
+                    //     3'd2: sdram_write_data_reg <= 16'h001F;  // Blue
+                    //     3'd3: sdram_write_data_reg <= 16'hFFE0;  // Yellow
+                    //     3'd4: sdram_write_data_reg <= 16'h07FF;  // Cyan
+                    //     3'd5: sdram_write_data_reg <= 16'hF81F;  // Magenta
+                    //     3'd6: sdram_write_data_reg <= 16'hFFFF;  // White
+                    //     3'd7: sdram_write_data_reg <= 16'h0000;  // Black
+                    // endcase
+                    // sdram_write_data_reg <= fb_init_counter[14] ^ fb_init_counter[4] ? 16'h07FF : 16'hF81F;
+                    sdram_write_data_reg <= 16'hFFFF;
+
+                    wr_burst_req <= 1'b1;
+                    exec_state <= EXEC_INIT_FB_WAIT;
+                end else begin
+                    // Framebuffer init done, now read back 0x900000 to verify
+                    exec_state <= EXEC_INIT_READ;
+                end
+            end
+
+            EXEC_INIT_FB_WAIT: begin
+                // Provide data when controller requests it
+                if (wr_burst_data_req) begin
+                    wr_burst_data <= sdram_write_data_reg;
+                end
+
+                // Wait for finish
+                if (wr_burst_finish) begin
+                    wr_burst_req <= 1'b0;
+                    fb_init_counter <= fb_init_counter + 1;
+                    exec_state <= EXEC_INIT_FB;
                 end
             end
 
@@ -233,6 +374,9 @@ always @(posedge clk_100mhz or negedge rst_n) begin
                 if (rd_burst_finish) begin
                     rd_burst_req_main <= 1'b0;
                     exec_state <= EXEC_FETCH;  // Now ready for instructions
+                    // Enable VGA now that SDRAM init is complete
+                    // (VGA will read from uninitialized framebuffer, showing black due to underrun)
+                    vga_enable <= 1'b1;
                 end
             end
 
@@ -370,28 +514,40 @@ end
 //    end
 //end
 
-// Decode nibbles to 7-seg (r3 is the display register, now 16-bit)
+// DEBUG: Check why arbiter never grants VGA
+wire [15:0] debug_display;
+assign debug_display[15:10] = 6'h0;
+assign debug_display[9] = vga_enable;
+assign debug_display[8] = vga_sdram_line_req;
+assign debug_display[7] = vga_rd_burst_active;
+assign debug_display[6] = wr_burst_req;
+assign debug_display[5] = rd_burst_req_main;
+assign debug_display[4] = monitor_rd_req;
+assign debug_display[3:2] = vga_fill_state[1:0];
+assign debug_display[1:0] = 2'b0;
+
+// Decode nibbles to 7-seg (show debug info instead of r3)
 wire [6:0] seg_nibble0, seg_nibble1, seg_nibble2, seg_nibble3;
 wire [6:0] mon_nibble0, mon_nibble1;
 
-// r3 register (16-bit = 4 nibbles)
+// Debug display (16-bit = 4 nibbles)
 seg_decoder dec_r3_0(
-    .bin_data(registers[3][3:0]),    // Lowest nibble
+    .bin_data(debug_display[3:0]),    // Lowest nibble
     .seg_data(seg_nibble0)
 );
 
 seg_decoder dec_r3_1(
-    .bin_data(registers[3][7:4]),
+    .bin_data(debug_display[7:4]),
     .seg_data(seg_nibble1)
 );
 
 seg_decoder dec_r3_2(
-    .bin_data(registers[3][11:8]),
+    .bin_data(debug_display[11:8]),
     .seg_data(seg_nibble2)
 );
 
 seg_decoder dec_r3_3(
-    .bin_data(registers[3][15:12]),  // Highest nibble
+    .bin_data(debug_display[15:12]),  // Highest nibble
     .seg_data(seg_nibble3)
 );
 
@@ -421,54 +577,99 @@ seg_scan scanner(
     .seg_data_5({1'b1, mon_nibble0})    // Monitor low (rightmost)
 );
 
-// SRAM line buffer for VGA (2KB @ 0x0000-0x07FF)
-// Dual-port: Processor writes, VGA reads
-(* ramstyle = "M10K" *) reg [15:0] vga_line_buffer [0:1023];  // 2KB
+// Dual SRAM line buffers for VGA (2KB × 2)
+// Buffer A: 0x0000-0x03FF (1024 pixels × 16-bit)
+// Buffer B: 0x0400-0x07FF (1024 pixels × 16-bit)
+(* ramstyle = "M10K" *) reg [15:0] vga_line_buffer_a [0:1023];
+(* ramstyle = "M10K" *) reg [15:0] vga_line_buffer_b [0:1023];
+
+// VGA controller SRAM interface
+wire [10:0] vga_sram_wr_addr;
+wire [15:0] vga_sram_wr_data;
+wire vga_sram_wr_en;
+wire vga_sram_buf_sel;
+wire [10:0] vga_sram_rd_addr;
+wire vga_sram_rd_buf_sel;
 reg [15:0] vga_sram_rd_data;
-wire [15:0] vga_sram_rd_addr;
 
-// VGA read port
-always @(posedge clk_65mhz) begin
-    vga_sram_rd_data <= vga_line_buffer[vga_sram_rd_addr[9:0]];
-end
-
-// Processor write port (example - processor can write here for debugging)
-// For now, initialize with test pattern
-integer j;
-initial begin
-    for (j = 0; j < 1024; j = j + 1) begin
-        // Test pattern: alternating colors
-        if (j < 128)
-            vga_line_buffer[j] = 16'hF800;  // Red
-        else if (j < 256)
-            vga_line_buffer[j] = 16'h07E0;  // Green
-        else if (j < 384)
-            vga_line_buffer[j] = 16'h001F;  // Blue
-        else if (j < 512)
-            vga_line_buffer[j] = 16'hFFE0;  // Yellow
-        else if (j < 640)
-            vga_line_buffer[j] = 16'h07FF;  // Cyan
-        else if (j < 768)
-            vga_line_buffer[j] = 16'hF81F;  // Magenta
-        else if (j < 896)
-            vga_line_buffer[j] = 16'hFFFF;  // White
+// SRAM write port (VGA controller writes during H-blank)
+always @(posedge clk_100mhz) begin
+    if (vga_sram_wr_en) begin
+        if (vga_sram_buf_sel)
+            vga_line_buffer_b[vga_sram_wr_addr] <= vga_sram_wr_data;
         else
-            vga_line_buffer[j] = 16'h0000;  // Black
+            vga_line_buffer_a[vga_sram_wr_addr] <= vga_sram_wr_data;
     end
 end
 
+// SRAM read port (VGA reads for display)
+always @(posedge clk_65mhz) begin
+    if (vga_sram_rd_buf_sel)
+        vga_sram_rd_data <= vga_line_buffer_b[vga_sram_rd_addr];
+    else
+        vga_sram_rd_data <= vga_line_buffer_a[vga_sram_rd_addr];
+end
+
+// VGA line fill SDRAM interface
+wire vga_sdram_line_req;
+reg vga_sdram_line_grant;
+wire [23:0] vga_sdram_line_addr;
+reg [15:0] vga_sdram_line_data;
+reg vga_sdram_line_valid;
+reg vga_sdram_line_done;
+
+// Vsync pulse for buffer swapping
+wire vsync_pulse;
+
 // VGA controller
+wire [1:0] vga_buffer_ready;
+wire [2:0] vga_fill_state;
+
 vga_controller vga_ctrl(
     .clk_vga(clk_65mhz),
     .clk_sys(clk_100mhz),
     .rst_n(rst_n),
+    .enable(vga_enable),
     .vga_out_r(vga_out_r),
     .vga_out_g(vga_out_g),
     .vga_out_b(vga_out_b),
     .vga_out_hs(vga_out_hs),
     .vga_out_vs(vga_out_vs),
+    .sram_wr_addr(vga_sram_wr_addr),
+    .sram_wr_data(vga_sram_wr_data),
+    .sram_wr_en(vga_sram_wr_en),
+    .sram_buf_sel(vga_sram_buf_sel),
     .sram_rd_addr(vga_sram_rd_addr),
-    .sram_rd_data(vga_sram_rd_data)
+    .sram_rd_buf_sel(vga_sram_rd_buf_sel),
+    .sram_rd_data(vga_sram_rd_data),
+    .sdram_line_req(vga_sdram_line_req),
+    .sdram_line_grant(vga_sdram_line_grant),
+    .sdram_line_addr(vga_sdram_line_addr),
+    .sdram_line_data(vga_sdram_line_data),
+    .sdram_line_valid(vga_sdram_line_valid),
+    .sdram_line_done(vga_sdram_line_done),
+    .fb_base_addr(front_fb_base),
+    .vsync_pulse(vsync_pulse),
+    .debug_buffer_ready(vga_buffer_ready),
+    .debug_fill_state(vga_fill_state)
 );
+
+// Double-buffer swap logic
+always @(posedge clk_100mhz or negedge rst_n) begin
+    if (!rst_n) begin
+        front_buffer <= 1'b0;  // Start with FB0 as front
+        back_buffer <= 1'b1;   // FB1 as back
+        frame_ready <= 1'b0;
+        monitor_rd_req <= 1'b0;
+    end else begin
+        if (vsync_pulse && frame_ready) begin
+            // Swap buffers
+            front_buffer <= back_buffer;
+            back_buffer <= front_buffer;
+            frame_ready <= 1'b0;
+            // Note: Processor will set frame_ready=1 when done rendering
+        end
+    end
+end
 
 endmodule
