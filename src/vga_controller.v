@@ -150,8 +150,6 @@ localparam FILL_REQ = 3'd1;
 localparam FILL_BURST = 3'd2;
 localparam FILL_DONE = 3'd3;
 
-// reg [11:0] next_line_y;       // Which line to fetch next
-// wire wr_buf_sel = next_line_y[0];
 // reg [10:0] burst_pixel_count; // Pixels received in current burst
 
 // Debug outputs
@@ -159,15 +157,12 @@ assign debug_buffer_ready = 2'b11;  // Buffers always managed automatically
 assign debug_fill_state = fill_state;
 
 // Cross clock domain: detect line start (active_x goes to 0)
-// reg [11:0] active_x0, active_x1;
 reg line_start;
 reg wr_buf_sel /*sync2*/, wr_buf_sel_sync1, wr_buf_sel_prev;
 reg [11:0] fill_y;
 
 always @(posedge clk_sys or negedge rst_n) begin
     if (!rst_n) begin
-        // active_x0 <= 12'd0;
-        // active_x1 <= 12'd0;
         line_start <= 0;
         wr_buf_sel <= 0;
         wr_buf_sel_sync1 <= 0;
@@ -179,16 +174,6 @@ always @(posedge clk_sys or negedge rst_n) begin
         if (wr_buf_sel != wr_buf_sel_prev && !line_start) begin
             fill_y <= fill_y_vga;
             line_start <= 1;
-
-            // active_x1 <= active_x;
-            // active_x0 <= active_x1;
-            // if (active_x1 < active_x0) begin
-            //     line_start <= 1;
-            //     if (active_y < 12'd767)
-            //         next_line_y <= active_y + 1;
-            //     else
-            //         next_line_y <= 12'd0;
-            // end
         end else begin
             line_start <= 0;  // wait until next line even if missed
         end
@@ -197,10 +182,12 @@ end
 
 reg [10:0] wr_addr;
 localparam BLK_EN = 1'b1;
-localparam BLK_SIZE = 8'd256;  // words
+localparam BLK_SIZE = 16'd256;  // words
+localparam BLK_COUNT = 16'd1024 / BLK_SIZE;
+localparam BLK_SIZE_BITS = $clog2(BLK_SIZE);
 localparam kBlockWait = 4'd2;  // cycles
 reg [3:0] block_idx;
-reg [3:0] block_wait;
+reg [2:0] block_wait;
 
 always @(posedge clk_sys or negedge rst_n) begin
     if (!rst_n) begin
@@ -208,7 +195,7 @@ always @(posedge clk_sys or negedge rst_n) begin
         sdram_line_req <= 1'b0;
         sdram_line_addr <= 24'h000000;
         wr_addr <= 11'd0;
-        block_wait <= 4'd0;
+        block_wait <= 3'd0;
     end else begin
 
         case (fill_state)
@@ -216,16 +203,16 @@ always @(posedge clk_sys or negedge rst_n) begin
                 // Start fetching next line when active_y changes
                 // Only run if enabled
                 if (enable && line_start) begin
-                    block_idx <= 1'd0;
+                    block_idx <= 4'd0;
                     wr_addr <= 11'd0;
                     // buffer_ready[wr_buf_sel] = 1'b0;
-                    block_wait <= 4'd0;
+                    block_wait <= 3'd0;
                     fill_state <= FILL_REQ;
                 end
             end
 
             FILL_REQ: begin
-                if (block_wait != 4'd0) begin
+                if (block_wait != 3'd0) begin
                     block_wait <= block_wait - 4'd1;
                 end else begin
                     // Request SDRAM burst
@@ -233,7 +220,7 @@ always @(posedge clk_sys or negedge rst_n) begin
 
                     // Calculate framebuffer address: fb_base_addr + (line_y * 1024)
                     // (memory uses word address)
-                    sdram_line_addr <= fb_base_addr + ({fill_y, 10'b0}) + ({block_idx, 8'b0});
+                    sdram_line_addr <= fb_base_addr + ({fill_y, 10'b0}) + ({block_idx, {BLK_SIZE_BITS{1'b0}}});
 
                     if (sdram_line_grant) begin
                         fill_state <= FILL_BURST;
@@ -258,7 +245,7 @@ always @(posedge clk_sys or negedge rst_n) begin
                 if (sdram_line_done) begin
                     sdram_line_req <= 1'b0;
 
-                    if (BLK_EN && block_idx < 4'd4) begin
+                    if (BLK_EN && block_idx < BLK_COUNT) begin
                         block_idx <= block_idx + 4'd1;
                         block_wait <= kBlockWait;
                         fill_state <= FILL_REQ;
