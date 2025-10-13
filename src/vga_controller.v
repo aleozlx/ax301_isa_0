@@ -74,47 +74,70 @@ assign vsync_pulse = ~vs_d & vs;  // Rising edge
 
 // Ping-pong buffer control
 wire vga_buf_sel = active_y[0];
+reg wr_buf_sel_vga, wr_buf_sel_vga_once;
+reg [11:0] fill_y_vga;
 
 // VGA scanout (reads from internal line buffer)
-reg buffer_ready [1:0];
+// reg buffer_ready [1:0];
 
-always @(posedge clk_vga) begin
-    if (de) begin
+always @(posedge clk_vga or negedge rst_n) begin
+    if (!rst_n) begin
+        // there is no time to prefetch @ active_y == 0
+        wr_buf_sel_vga_once <= 0;
+        wr_buf_sel_vga <= 1;
+        fill_y_vga <= 12'd1;
+    end else begin
+        if (de) begin
 
-        // Underrun detection (preserved this code for reference)
-        if (buffer_ready[vga_buf_sel]) begin
-            // Output pixel from buffer
-            if (vga_buf_sel)
-                pixel_out <= line_buffer_b[active_x[10:0]];
-            else
-                pixel_out <= line_buffer_a[active_x[10:0]];
+            // // Underrun detection
+            // if (buffer_ready[vga_buf_sel]) begin
+                // Output pixel from buffer
+                if (vga_buf_sel)
+                    pixel_out <= line_buffer_b[active_x[10:0]];
+                else
+                    pixel_out <= line_buffer_a[active_x[10:0]];
+            // end else begin
+            //     // Underrun patterm (preserved this code for reference)
+            //     if (active_y[5] ^ active_x[7]) begin
+            //         if (active_y[1]) begin
+            //             pixel_out[15:11] <= 5'b00000;
+            //             pixel_out[10:5] <= {1'b1, vga_underrun_dbg};
+            //             pixel_out[4:0] <= 5'b00000;
+            //         end else begin
+            //             pixel_out[15:11] <= vga_underrun_dbg;
+            //             pixel_out[10:5] <= 6'b111111;
+            //             pixel_out[4:0] <= 5'b11111;
+            //         end
+            //     end else begin
+            //         pixel_out[4:0] <= 5'b11111;
+            //         if (active_y[1]) begin
+            //             pixel_out[15:11] <= 5'b00000;
+            //             pixel_out[10:5] <= {1'b1, vga_underrun_dbg};
+            //         end else begin
+            //             pixel_out[15:11] <= vga_underrun_dbg;
+            //             pixel_out[10:5] <= 6'b000000;
+            //         end
+            //     end
+
+            //     pixel_out <= 16'd0;
+            // end
+            
+            wr_buf_sel_vga_once <= 1;
         end else begin
-            // Underrun: buffer not ready, output pattern for debug
-            if (active_y[5] ^ active_x[7]) begin
-                if (active_y[1]) begin
-                    pixel_out[15:11] <= 5'b00000;
-                    pixel_out[10:5] <= {1'b1, vga_underrun_dbg};
-                    pixel_out[4:0] <= 5'b00000;
-                end else begin
-                    pixel_out[15:11] <= vga_underrun_dbg;
-                    pixel_out[10:5] <= 6'b111111;
-                    pixel_out[4:0] <= 5'b11111;
-                end
-            end else begin
-                pixel_out[4:0] <= 5'b11111;
-                if (active_y[1]) begin
-                    pixel_out[15:11] <= 5'b00000;
-                    pixel_out[10:5] <= {1'b1, vga_underrun_dbg};
-                end else begin
-                    pixel_out[15:11] <= vga_underrun_dbg;
-                    pixel_out[10:5] <= 6'b000000;
-                end
+            // Blanking period - output black
+            pixel_out <= 16'd0;
+
+            // 24 cycles budget (H_FP) to swap line buffers based on active_y
+            // vga_buf_sel points to current scan out buffer (just finished)
+            // next scanout buffer is ~vga_buf_sel (once active_y updates)
+            // next fill buffer is the one after that (vga_buf_sel again)
+            if (wr_buf_sel_vga_once) begin
+                if (active_y == 12'd766) fill_y_vga <= 12'd0;
+                else fill_y_vga <= active_y + 12'd2;
+                wr_buf_sel_vga <= vga_buf_sel;
+                wr_buf_sel_vga_once <= 0;
             end
         end
-        
-    end else begin
-        // Blanking period - output black
-        pixel_out <= 16'd0;
     end
 end
 
@@ -127,8 +150,8 @@ localparam FILL_REQ = 3'd1;
 localparam FILL_BURST = 3'd2;
 localparam FILL_DONE = 3'd3;
 
-reg [11:0] next_line_y;       // Which line to fetch next
-wire wr_buf_sel = next_line_y[0];
+// reg [11:0] next_line_y;       // Which line to fetch next
+// wire wr_buf_sel = next_line_y[0];
 // reg [10:0] burst_pixel_count; // Pixels received in current burst
 
 // Debug outputs
@@ -136,31 +159,43 @@ assign debug_buffer_ready = 2'b11;  // Buffers always managed automatically
 assign debug_fill_state = fill_state;
 
 // Cross clock domain: detect line start (active_x goes to 0)
-reg [11:0] active_x0, active_x1;
+// reg [11:0] active_x0, active_x1;
 reg line_start;
+reg wr_buf_sel /*sync2*/, wr_buf_sel_sync1, wr_buf_sel_prev;
+reg [11:0] fill_y;
 
 always @(posedge clk_sys or negedge rst_n) begin
     if (!rst_n) begin
-        active_x0 <= 12'd0;
-        active_x1 <= 12'd0;
-        line_start <= 1'd0;
+        // active_x0 <= 12'd0;
+        // active_x1 <= 12'd0;
+        line_start <= 0;
+        wr_buf_sel <= 0;
+        wr_buf_sel_sync1 <= 0;
+        wr_buf_sel_prev <= 0;
     end else begin
-        if (!line_start) begin
-            active_x1 <= active_x;
-            active_x0 <= active_x1;
-            if (active_x1 < active_x0) begin
-                line_start <= 1;
-                if (active_y < 12'd767)
-                    next_line_y <= active_y + 1;
-                else
-                    next_line_y <= 12'd0;
-            end
+        wr_buf_sel_sync1 <= wr_buf_sel_vga;
+        wr_buf_sel <= wr_buf_sel_sync1;
+        wr_buf_sel_prev <= wr_buf_sel;
+        if (wr_buf_sel != wr_buf_sel_prev && !line_start) begin
+            fill_y <= fill_y_vga;
+            line_start <= 1;
+                
+            // active_x1 <= active_x;
+            // active_x0 <= active_x1;
+            // if (active_x1 < active_x0) begin
+            //     line_start <= 1;
+            //     if (active_y < 12'd767)
+            //         next_line_y <= active_y + 1;
+            //     else
+            //         next_line_y <= 12'd0;
+            // end
         else line_start <= 0;  // wait until next line even if missed
         end
     end
 end
 
 reg [10:0] wr_addr;  // Write address for SDRAM data
+localparam BLK_EN = 1'b0;
 localparam BLK_SIZE = 8'd128;  // 128 words
 reg [3:0] block_idx;
 
@@ -179,7 +214,7 @@ always @(posedge clk_sys or negedge rst_n) begin
                 if (enable && line_start) begin
                     block_idx <= 1'd0;
                     wr_addr <= 11'd0;
-                    buffer_ready[~vga_buf_sel] = 1'b0;
+                    // buffer_ready[wr_buf_sel] = 1'b0;
                     fill_state <= FILL_REQ;
                 end
             end
@@ -190,7 +225,7 @@ always @(posedge clk_sys or negedge rst_n) begin
 
                 // Calculate framebuffer address: fb_base_addr + (line_y * 1024)
                 // (memory uses word address)
-                sdram_line_addr <= fb_base_addr + ({next_line_y, 10'b0}) + ({block_idx, 7'b0});
+                sdram_line_addr <= fb_base_addr + ({fill_y, 10'b0}) + ({block_idx, 7'b0});
 
                 if (sdram_line_grant) begin
                     fill_state <= FILL_BURST;
@@ -201,7 +236,7 @@ always @(posedge clk_sys or negedge rst_n) begin
                 // Receive burst data - written to line buffer automatically
                 if (sdram_line_valid) begin
                     // if (wr_buf_sel) begin
-                    if (~vga_buf_sel) begin
+                    if (wr_buf_sel) begin
                         line_buffer_b[wr_addr] <= sdram_line_data;
                     end else begin
                         line_buffer_a[wr_addr] <= sdram_line_data;
@@ -214,11 +249,11 @@ always @(posedge clk_sys or negedge rst_n) begin
                 if (sdram_line_done) begin
                     sdram_line_req <= 1'b0;
 
-                    if (block_idx < 4'd8) begin
+                    if (BLK_EN && block_idx < 4'd8) begin
                         block_idx <= block_idx + 4'd1;
                         fill_state <= FILL_REQ;
                     end else begin
-                        buffer_ready[~vga_buf_sel] <= 1'b1;
+                        // buffer_ready[wr_buf_sel] <= 1'b1;
                         fill_state <= FILL_IDLE;
                     end
                     
