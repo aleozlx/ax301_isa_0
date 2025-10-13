@@ -1,4 +1,4 @@
-# UART-Based Soft Processor with SDRAM Stack - Phase 1b: VGA Output ✓
+# Dual-Core Soft Processor FPGA Project
 
 > **Note:** See `chat_context.txt` for the high-level project roadmap (text/graphics dual-mode processor architecture). That roadmap is stable and will not change in the medium term. This file documents the current implementation status and ISA design.
 

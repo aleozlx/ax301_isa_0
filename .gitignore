@@ -3,6 +3,7 @@ db/
 incremental_db/
 output_files/
 sim/
+greybox_tmp/
 
 # Backup files
 *.bak
@@ -13,6 +14,10 @@ sim/
 *.jdi
 *.qdf
 *_description.txt
+*.ipregen.rpt
+
+# Quartus IP editor temporary files
+.qsys_edit/
 
 # Other
 *.tcl
