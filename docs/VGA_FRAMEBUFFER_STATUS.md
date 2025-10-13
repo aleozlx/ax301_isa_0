@@ -120,6 +120,7 @@
    - SDRAM controller needs recovery time between burst requests
    - 2-cycle wait prevents request denial/collision
    - Without wait: arbiter grants but immediately de-asserts (1-cycle glitch)
+   - ![Signal tap arbiter pressure](signal_tap_vga_blocks.png)
 
 2. **Diagonal Pattern Math**
    - For 45° on 1024×768 (4:3 aspect): scale Y by 4/3
