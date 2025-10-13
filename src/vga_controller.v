@@ -179,7 +179,7 @@ always @(posedge clk_sys or negedge rst_n) begin
         if (wr_buf_sel != wr_buf_sel_prev && !line_start) begin
             fill_y <= fill_y_vga;
             line_start <= 1;
-                
+
             // active_x1 <= active_x;
             // active_x0 <= active_x1;
             // if (active_x1 < active_x0) begin
@@ -189,13 +189,14 @@ always @(posedge clk_sys or negedge rst_n) begin
             //     else
             //         next_line_y <= 12'd0;
             // end
-        else line_start <= 0;  // wait until next line even if missed
+        end else begin
+            line_start <= 0;  // wait until next line even if missed
         end
     end
 end
 
-reg [10:0] wr_addr;  // Write address for SDRAM data
-localparam BLK_EN = 1'b0;
+reg [10:0] wr_addr;
+localparam BLK_EN = 1'b1;
 localparam BLK_SIZE = 8'd128;  // 128 words
 reg [3:0] block_idx;
 

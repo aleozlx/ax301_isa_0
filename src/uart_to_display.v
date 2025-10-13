@@ -327,12 +327,12 @@ always @(posedge clk_100mhz or negedge rst_n) begin
                     // else
                     //     sdram_write_data_reg <= 16'h07E0;
 
-                    // sdram_write_data_reg <= fb_init_counter[15] ^ fb_init_counter[5] ? 16'h07FF : 16'hF81F;
-                    if (fb_init_counter[10]) begin
-                        sdram_write_data_reg <= fb_init_counter[5] ? 16'h07FF : 16'hF81F;
-                    end else begin
-                        sdram_write_data_reg <= fb_init_counter[5] ? 16'h07E0 : 16'hF800;
-                    end
+                    sdram_write_data_reg <= fb_init_counter[15] ^ fb_init_counter[5] ? 16'h07FF : 16'hF81F;
+                    // if (fb_init_counter[10]) begin
+                    //     sdram_write_data_reg <= fb_init_counter[5] ? 16'h07FF : 16'hF81F;
+                    // end else begin
+                    //     sdram_write_data_reg <= fb_init_counter[5] ? 16'h07E0 : 16'hF800;
+                    // end
                     // sdram_write_data_reg <= 16'hFFFF;
 
                     wr_burst_req <= 1'b1;
