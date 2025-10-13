@@ -197,8 +197,10 @@ end
 
 reg [10:0] wr_addr;
 localparam BLK_EN = 1'b1;
-localparam BLK_SIZE = 8'd128;  // 128 words
+localparam BLK_SIZE = 8'd256;  // words
+localparam kBlockWait = 4'd2;  // cycles
 reg [3:0] block_idx;
+reg [3:0] block_wait;
 
 always @(posedge clk_sys or negedge rst_n) begin
     if (!rst_n) begin
@@ -206,6 +208,7 @@ always @(posedge clk_sys or negedge rst_n) begin
         sdram_line_req <= 1'b0;
         sdram_line_addr <= 24'h000000;
         wr_addr <= 11'd0;
+        block_wait <= 4'd0;
     end else begin
 
         case (fill_state)
@@ -216,20 +219,25 @@ always @(posedge clk_sys or negedge rst_n) begin
                     block_idx <= 1'd0;
                     wr_addr <= 11'd0;
                     // buffer_ready[wr_buf_sel] = 1'b0;
+                    block_wait <= 4'd0;
                     fill_state <= FILL_REQ;
                 end
             end
 
             FILL_REQ: begin
-                // Request SDRAM burst
-                sdram_line_req <= 1'b1;
+                if (block_wait != 4'd0) begin
+                    block_wait <= block_wait - 4'd1;
+                end else begin
+                    // Request SDRAM burst
+                    sdram_line_req <= 1'b1;
 
-                // Calculate framebuffer address: fb_base_addr + (line_y * 1024)
-                // (memory uses word address)
-                sdram_line_addr <= fb_base_addr + ({fill_y, 10'b0}) + ({block_idx, 7'b0});
+                    // Calculate framebuffer address: fb_base_addr + (line_y * 1024)
+                    // (memory uses word address)
+                    sdram_line_addr <= fb_base_addr + ({fill_y, 10'b0}) + ({block_idx, 8'b0});
 
-                if (sdram_line_grant) begin
-                    fill_state <= FILL_BURST;
+                    if (sdram_line_grant) begin
+                        fill_state <= FILL_BURST;
+                    end
                 end
             end
 
@@ -250,8 +258,9 @@ always @(posedge clk_sys or negedge rst_n) begin
                 if (sdram_line_done) begin
                     sdram_line_req <= 1'b0;
 
-                    if (BLK_EN && block_idx < 4'd8) begin
+                    if (BLK_EN && block_idx < 4'd4) begin
                         block_idx <= block_idx + 4'd1;
+                        block_wait <= kBlockWait;
                         fill_state <= FILL_REQ;
                     end else begin
                         // buffer_ready[wr_buf_sel] <= 1'b1;

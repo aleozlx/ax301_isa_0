@@ -165,7 +165,7 @@ always @(posedge clk_100mhz or negedge rst_n) begin
             vga_sdram_line_grant <= 1'b1;
             vga_rd_burst_active <= 1'b1;
             vga_rd_burst_addr_reg <= vga_sdram_line_addr;
-            vga_rd_burst_len_reg <= 10'd128;  // page size is 512 words maximum
+            vga_rd_burst_len_reg <= 10'd256;  // page size is 512 words maximum
             vga_sdram_line_done <= 1'b0;
         end else if (vga_rd_burst_active) begin
             // VGA burst active: forward SDRAM data to VGA
