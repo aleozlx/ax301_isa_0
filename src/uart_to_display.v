@@ -307,35 +307,19 @@ always @(posedge clk_100mhz or negedge rst_n) begin
                 if (fb_init_counter < 20'd786432) begin  // 1024×768 pixels
                     // Calculate address: FB0_BASE + pixel_index
                     // (memory uses word address: 1 pixel = 1 word = 1 pointer incr)
-                    wr_burst_addr <= FB0_BASE + fb_init_counter[18:0];
-
-                    // Generate pattern: 8 colors, 128 pixels each (total 1024 pixels wide)
-                    // Color based on X position (fb_init_counter % 1024)
-                    // case (fb_init_counter[18:16])  // Bits [9:7] give position/128
-                    //     3'd0: sdram_write_data_reg <= 16'hF800;  // Red
-                    //     3'd1: sdram_write_data_reg <= 16'h07E0;  // Green
-                    //     3'd2: sdram_write_data_reg <= 16'h001F;  // Blue
-                    //     3'd3: sdram_write_data_reg <= 16'hFFE0;  // Yellow
-                    //     3'd4: sdram_write_data_reg <= 16'h07FF;  // Cyan
-                    //     3'd5: sdram_write_data_reg <= 16'hF81F;  // Magenta
-                    //     3'd6: sdram_write_data_reg <= 16'hFFFF;  // White
-                    //     3'd7: sdram_write_data_reg <= 16'h0000;  // Black
-                    // endcase
-
-                    // if (fb_init_counter < 20'd196608)
-                    //     sdram_write_data_reg <= 16'hF81F;
-                    // else
-                    //     sdram_write_data_reg <= 16'h07E0;
-
-                    sdram_write_data_reg <= fb_init_counter[15] ^ fb_init_counter[5] ? 16'h07FF : 16'hF81F;
-                    // if (fb_init_counter[10]) begin
-                    //     sdram_write_data_reg <= fb_init_counter[5] ? 16'h07FF : 16'hF81F;
-                    // end else begin
-                    //     sdram_write_data_reg <= fb_init_counter[5] ? 16'h07E0 : 16'hF800;
-                    // end
-                    // sdram_write_data_reg <= 16'hFFFF;
-
+                    wr_burst_addr <= FB0_BASE + fb_init_counter;
                     wr_burst_req <= 1'b1;
+
+                    if ({3'b0, fb_init_counter[19:10] /*y*/} * 4 + {3'b0, fb_init_counter[9:0] /*x*/} * 3 < 13'd3072) begin
+                        if (fb_init_counter[10]) begin
+                            sdram_write_data_reg <= fb_init_counter[5] ? 16'h07FF : 16'hF81F;
+                        end else begin
+                            sdram_write_data_reg <= fb_init_counter[5] ? 16'h07E0 : 16'hF800;
+                        end
+                    end else begin
+                        sdram_write_data_reg <= fb_init_counter[15] ^ fb_init_counter[5] ? 16'h07FF : 16'hF81F;
+                    end
+
                     exec_state <= EXEC_INIT_FB_WAIT;
                 end else begin
                     // Framebuffer init done, now read back 0x900000 to verify
