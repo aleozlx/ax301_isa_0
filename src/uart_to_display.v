@@ -498,17 +498,6 @@ end
 //    end
 //end
 
-// DEBUG: Check why arbiter never grants VGA
-// wire [15:0] debug_display;
-// assign debug_display[15:10] = 6'h0;
-// assign debug_display[9] = vga_enable;
-// assign debug_display[8] = vga_sdram_line_req;
-// assign debug_display[7] = vga_rd_burst_active;
-// assign debug_display[6] = wr_burst_req;
-// assign debug_display[5] = rd_burst_req_main;
-// assign debug_display[4] = monitor_rd_req;
-// assign debug_display[3:2] = vga_fill_state[1:0];
-// assign debug_display[1:0] = 2'b0;
 
 // Decode nibbles to 7-seg (show debug info instead of r3)
 wire [6:0] seg_nibble0, seg_nibble1, seg_nibble2, seg_nibble3;
@@ -572,9 +561,6 @@ reg vga_sdram_line_done;
 wire vsync_pulse;
 
 // VGA controller
-wire [1:0] vga_buffer_ready;
-wire [2:0] vga_fill_state;
-
 vga_controller vga_ctrl(
     .clk_vga(clk_65mhz),
     .clk_sys(clk_100mhz),
@@ -593,9 +579,7 @@ vga_controller vga_ctrl(
     .sdram_line_valid(rd_burst_data_valid),
     .sdram_line_done(vga_sdram_line_done),
     .fb_base_addr(front_fb_base),
-    .vsync_pulse(vsync_pulse),
-    .debug_buffer_ready(vga_buffer_ready),
-    .debug_fill_state(vga_fill_state)
+    .vsync_pulse(vsync_pulse)
 );
 
 // Double-buffer swap logic

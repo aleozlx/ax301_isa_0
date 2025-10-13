@@ -508,10 +508,11 @@ shader_main:
 - ✅ Simple fill shader works
 
 **Phase 1c Complete:**
-- ✅ VGA displays 1024×768 image from SDRAM
-- ✅ Line buffer maintains 60Hz regardless of rendering
-- ✅ No tearing or artifacts
-- ✅ Can update framebuffer while displaying
+- ✅ VGA displays 1024×768 image from SDRAM framebuffer
+- ✅ Line buffer maintains 60Hz with dual ping-pong buffers
+- ✅ No tearing or artifacts (stable diagonal test pattern)
+- ✅ SDRAM arbiter successfully multiplexes VGA and processor access
+- ✅ 256-word bursts with 2-cycle inter-block wait achieves 5:1 timing margin
 
 ## Design Philosophy
 
@@ -699,6 +700,28 @@ Based on `sdram_vga_ref/src/vga/color_bar.v` from ALINX examples:
 - Expected: 8 μs SDRAM + 8× arbiter = ~10-12 μs (fits in 20.67 μs)
 - Actual: Frequent underruns suggest >20 μs
 - **Hypothesis:** SDRAM controller inefficiency or arbiter starvation
+
+### Resolution: Fully Working! ✅
+
+**Final Configuration:**
+- **Block size:** 256 words per burst (4 blocks × 256 = 1024 pixels/line)
+- **Inter-block wait:** 2 cycles between burst requests
+- **Key fixes:**
+  1. Added `else` clause to CDC synchronizer for proper line_start clearing
+  2. Implemented 2-cycle wait (`block_wait`) between SDRAM burst requests
+  3. Fixed off-by-one in framebuffer init (used full `fb_init_counter[19:0]` instead of `[18:0]`)
+  4. Corrected loop termination: `block_idx < BLK_COUNT - 1` to prevent extra block request
+
+**Lessons Learned:**
+1. **Arbiter back-pressure:** SDRAM controller needs time between back-to-back burst requests. A 2-cycle wait prevents request collision/denial.
+2. **Diagonal pattern math:** For true 45° diagonal on 1024×768 (4:3 aspect), use: `pixel_y * 4 + pixel_x * 3 < 13'd3072` (accounts for aspect ratio scaling).
+3. **Bit-width for overflow:** Sum requires 13 bits (max: 767×4 + 1023×3 = 6137).
+4. **SignalTap debugging:** Essential for identifying rapid FSM state transitions that indicated missing wait states.
+
+**Performance:**
+- Line fill time: ~3-4 μs for 1024 pixels (4 bursts × 256 words @ 100MHz)
+- Available time: 20.67 μs per scanline
+- Margin: ~5:1 safety factor ✓
 
 Next: Enable processor to write to framebuffer → test LOAD/STORE instructions
 

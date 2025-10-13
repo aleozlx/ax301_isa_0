@@ -29,11 +29,7 @@ module vga_controller(
     input wire [23:0] fb_base_addr,     // Front buffer base
 
     // Vsync output for buffer swapping
-    output wire vsync_pulse,
-
-    // Debug outputs
-    output wire [1:0] debug_buffer_ready,
-    output wire [2:0] debug_fill_state
+    output wire vsync_pulse
 );
 
 // VGA timing signals
@@ -149,12 +145,6 @@ localparam FILL_IDLE = 3'd0;
 localparam FILL_REQ = 3'd1;
 localparam FILL_BURST = 3'd2;
 localparam FILL_DONE = 3'd3;
-
-// reg [10:0] burst_pixel_count; // Pixels received in current burst
-
-// Debug outputs
-assign debug_buffer_ready = 2'b11;  // Buffers always managed automatically
-assign debug_fill_state = fill_state;
 
 // Cross clock domain: detect line start (active_x goes to 0)
 reg line_start;
