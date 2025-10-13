@@ -249,6 +249,26 @@ reg monitor_rd_req;
 //localparam MON_READ = 2'd1;
 //localparam MON_WAIT = 2'd2;
 
+// Font designed to be readable at 8x8 pixel size
+reg [7:0] font_a_row [0:7];
+initial begin
+    font_a_row[0] <= 8'b00111100;  //   ****
+    font_a_row[1] <= 8'b01100110;  //  **  **
+    font_a_row[2] <= 8'b01100110;  //  **  **
+    font_a_row[3] <= 8'b01111110;  //  ******
+    font_a_row[4] <= 8'b01100110;  //  **  **
+    font_a_row[5] <= 8'b01100110;  //  **  **
+    font_a_row[6] <= 8'b01100110;  //  **  **
+    font_a_row[7] <= 8'b00000000;  //
+end
+
+// Extract pixel coordinates
+wire [9:0] pixel_x = fb_init_counter[9:0];   // Columns 0-1023
+wire [9:0] pixel_y = fb_init_counter[19:10]; // Rows 0-767
+wire [2:0] font_row_idx = pixel_y[2:0];  // 0-7
+wire [2:0] font_col_idx = pixel_x[2:0];  // 0-7
+wire font_pixel = font_a_row[font_row_idx][7 - font_col_idx];
+
 // Execute instruction (now at 100MHz)
 always @(posedge clk_100mhz or negedge rst_n) begin
     if (!rst_n) begin
@@ -299,9 +319,7 @@ always @(posedge clk_100mhz or negedge rst_n) begin
             end
 
             EXEC_INIT_FB: begin
-                // Initialize framebuffer with vertical stripe pattern
                 // FB0: 1024×768 pixels = 786,432 pixels at 0x000000
-                // Pattern: 8-pixel wide stripes cycling through 8 colors
                 rx_data_ready <= 1'b0;
 
                 if (fb_init_counter < 20'd786432) begin  // 1024×768 pixels
@@ -310,12 +328,8 @@ always @(posedge clk_100mhz or negedge rst_n) begin
                     wr_burst_addr <= FB0_BASE + fb_init_counter;
                     wr_burst_req <= 1'b1;
 
-                    if ({3'b0, fb_init_counter[19:10] /*y*/} * 4 + {3'b0, fb_init_counter[9:0] /*x*/} * 3 < 13'd3072) begin
-                        if (fb_init_counter[10]) begin
-                            sdram_write_data_reg <= fb_init_counter[5] ? 16'h07FF : 16'hF81F;
-                        end else begin
-                            sdram_write_data_reg <= fb_init_counter[5] ? 16'h07E0 : 16'hF800;
-                        end
+                    if ({3'b0, pixel_y} * 4 + {3'b0, pixel_x} * 3 < 13'd3072) begin
+                        sdram_write_data_reg <= font_pixel ? 16'hFFFF : 16'h0000;
                     end else begin
                         sdram_write_data_reg <= fb_init_counter[15] ^ fb_init_counter[5] ? 16'h07FF : 16'hF81F;
                     end
